@@ -1,12 +1,13 @@
 import React, { useRef, useState } from 'react';
 import './App.css';
-
 import firebase from 'firebase/compat/app';
 import 'firebase/compat/auth';
 import 'firebase/compat/firestore';
+import 'firebase/compat/storage'; // Add storage import
 
 import { useAuthState } from 'react-firebase-hooks/auth';
 import { useCollectionData } from 'react-firebase-hooks/firestore';
+import { ReactMic } from 'react-mic'; // Import ReactMic
 
 firebase.initializeApp({
   apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
@@ -15,14 +16,13 @@ firebase.initializeApp({
   storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
   messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
   appId: process.env.REACT_APP_FIREBASE_API_ID,
-})
+});
 
 const auth = firebase.auth();
 const firestore = firebase.firestore();
-
+const storage = firebase.storage();
 
 function App() {
-
   const [user] = useAuthState(auth);
 
   return (
@@ -35,13 +35,11 @@ function App() {
       <section>
         {user ? <ChatRoom /> : <SignIn />}
       </section>
-
     </div>
   );
 }
 
 function SignIn() {
-
   const signInWithGoogle = () => {
     const provider = new firebase.auth.GoogleAuthProvider();
     auth.signInWithPopup(provider);
@@ -53,7 +51,6 @@ function SignIn() {
       <p>Do not violate the community guidelines or you will be banned for life!</p>
     </>
   )
-
 }
 
 function SignOut() {
@@ -62,65 +59,125 @@ function SignOut() {
   )
 }
 
-
 function ChatRoom() {
   const dummy = useRef();
   const messagesRef = firestore.collection('messages');
   const query = messagesRef.orderBy('createdAt').limit(25);
-
   const [messages] = useCollectionData(query, { idField: 'id' });
 
   const [formValue, setFormValue] = useState('');
+  const [record, setRecord] = useState(false); // State to control recording
+  const [blob, setBlob] = useState(null); // State to store recorded audio
 
+  const onRecordingComplete = (blobObject) => {
+    setBlob(blobObject.blob);
+  };
+
+  const renderAudio = () => {
+    if (blob) {
+      const audioUrl = URL.createObjectURL(blob);
+      return (
+        <div>
+          <audio controls>
+            <source src={audioUrl} type="audio/mp3" />
+            Your browser does not support the audio element.
+          </audio>
+        </div>
+      );
+    }
+    return null;
+  };
+
+  const sendVoiceMessage = async () => {
+    const { uid, photoURL } = auth.currentUser;
+
+    // Upload audio file to Firebase Storage
+    const storageRef = storage.ref();
+    const audioRef = storageRef.child(`${uid}/${new Date().toISOString()}.wav`);
+    await audioRef.put(blob);
+
+    // Get the URL of the uploaded audio
+    const audioURL = await audioRef.getDownloadURL();
+
+    // Add voice message to Firestore
+    await messagesRef.add({
+      audioURL,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      uid,
+      photoURL
+    });
+
+    setBlob(null);
+    dummy.current.scrollIntoView({ behavior: 'smooth' });
+  }
 
   const sendMessage = async (e) => {
     e.preventDefault();
 
-    const { uid, photoURL } = auth.currentUser;
+    // Send text message
+    if (formValue.trim() !== '') {
+      const { uid, photoURL } = auth.currentUser;
+      await messagesRef.add({
+        text: formValue,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        uid,
+        photoURL
+      });
+      setFormValue('');
+      dummy.current.scrollIntoView({ behavior: 'smooth' });
+    }
 
-    await messagesRef.add({
-      text: formValue,
-      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-      uid,
-      photoURL
-    })
+    // Send voice message if there is a recorded audio
+    if (blob) {
+      await sendVoiceMessage();
+    }
+  };
 
-    setFormValue('');
-    dummy.current.scrollIntoView({ behavior: 'smooth' });
-  }
+  return (
+    <>
+      <main>
+        {messages && messages.map(msg => (
+          <ChatMessage key={msg.id} message={msg} />
+        ))}
+        {renderAudio()}
+        <span ref={dummy}></span>
+      </main>
 
-  return (<>
-    <main>
+      <form onSubmit={sendMessage}>
+        <input
+          value={formValue}
+          onChange={(e) => setFormValue(e.target.value)}
+          placeholder="Type a message or record a voice message"
+        />
 
-      {messages && messages.map(msg => <ChatMessage key={msg.id} message={msg} />)}
+        <ReactMic
+          record={record}
+          onStop={onRecordingComplete}
+          strokeColor="#000000"
+          backgroundColor="#FF4081"
+        />
 
-      <span ref={dummy}></span>
+        <button type="button" onClick={() => setRecord(!record)}>
+          {record ? 'Stop Recording' : 'Start Recording'}
+        </button>
 
-    </main>
-
-    <form onSubmit={sendMessage}>
-
-      <input value={formValue} onChange={(e) => setFormValue(e.target.value)} placeholder="say something nice" />
-
-      <button type="submit" disabled={!formValue}>🕊️</button>
-
-    </form>
-  </>)
+        <button type="submit" disabled={!formValue && !blob}>Send</button>
+      </form>
+    </>
+  );
 }
-
 
 function ChatMessage(props) {
-  const { text, uid, photoURL } = props.message;
-
+  const { text, uid, photoURL, audioURL } = props.message;
   const messageClass = uid === auth.currentUser.uid ? 'sent' : 'received';
 
-  return (<>
+  return (
     <div className={`message ${messageClass}`}>
-      <img src={photoURL || 'https://api.adorable.io/avatars/23/abott@adorable.png'} />
-      <p>{text}</p>
+      <img src={photoURL || 'https://api.adorable.io/avatars/23/abott@adorable.png'} alt="user" />
+      {text && <p>{text}</p>}
+      {audioURL && <audio controls src={audioURL}></audio>}
     </div>
-  </>)
+  );
 }
-
 
 export default App;
